@@ -184,6 +184,7 @@ func cmdDoctor(args []string, stdout, stderr io.Writer) int {
 
 	fmt.Fprintf(stdout, "enabled=%t\n", cfg.Enabled)
 	fmt.Fprintf(stdout, "ttl_seconds=%d\n", cfg.TTLSeconds)
+	fmt.Fprintf(stdout, "osc7501=%t\n", cfg.OSC7501)
 
 	if err := os.MkdirAll(stateDir(), 0o755); err != nil {
 		fmt.Fprintf(stdout, "state_dir_status=error (%s)\n", err)
@@ -419,4 +420,8 @@ enabled = true
 
 # How long a record stays valid before it is treated as expired and garbage-collected.
 ttl_seconds = 7776000
+
+# Also report each state change as an OSC 7501 program status sequence on the
+# agent's terminal, for terminals and tmux builds that display it per pane.
+osc7501 = false
 `

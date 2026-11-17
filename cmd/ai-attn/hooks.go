@@ -142,20 +142,7 @@ func hookClaudeShaped(agent, hookPayload string, stderr io.Writer) int {
 		state = "stopped"
 		reason = event
 	case "SessionEnd":
-		paneID := os.Getenv("TMUX_PANE")
-		identity := sessionIdentity{
-			Agent:     agent,
-			SessionID: sessionID,
-			PaneID:    paneID,
-			Socket:    tmuxSocket(),
-		}
-		key := sessionKey(identity.Agent, identity.SessionID, identity.PaneID, identity.Socket)
-		if err := os.Remove(stateFile(key)); err != nil && !os.IsNotExist(err) {
-			fmt.Fprintf(stderr, "ai-attn: warning: failed to remove state file: %v\n", err)
-		}
-		if err := removeCompatibleLegacyRecord(identity, key); err != nil {
-			fmt.Fprintf(stderr, "ai-attn: warning: failed to remove legacy state file: %v\n", err)
-		}
+		removeSessionRecord(agent, sessionID, stderr)
 		return exitOK
 	default:
 		return exitOK
@@ -298,6 +285,9 @@ func removeSessionRecord(agent, sessionID string, stderr io.Writer) {
 	if err := removeCompatibleLegacyRecord(identity, key); err != nil {
 		fmt.Fprintf(stderr, "ai-attn: warning: failed to remove legacy state file: %v\n", err)
 	}
+	if loadConfig(stderr).OSC7501 {
+		emitProgramStatus(agent, "state=clear", stderr)
+	}
 }
 
 // matchOpencodeEvent maps an OpenCode event type to an ai-attn state and reason.
@@ -380,19 +370,7 @@ func hookMuse(hookPayload string, stderr io.Writer) int {
 	}
 
 	if event == "SessionEnd" {
-		identity := sessionIdentity{
-			Agent:     "muse",
-			SessionID: sessionID,
-			PaneID:    os.Getenv("TMUX_PANE"),
-			Socket:    tmuxSocket(),
-		}
-		key := sessionKey(identity.Agent, identity.SessionID, identity.PaneID, identity.Socket)
-		if err := os.Remove(stateFile(key)); err != nil && !os.IsNotExist(err) {
-			fmt.Fprintf(stderr, "ai-attn: warning: failed to remove state file: %v\n", err)
-		}
-		if err := removeCompatibleLegacyRecord(identity, key); err != nil {
-			fmt.Fprintf(stderr, "ai-attn: warning: failed to remove legacy state file: %v\n", err)
-		}
+		removeSessionRecord("muse", sessionID, stderr)
 		return exitOK
 	}
 
@@ -524,6 +502,11 @@ func writeHookState(state string, agent, sessionID, cwd, reason string, stderr i
 	if _, err := writeStateRecord(identity, state, reason); err != nil {
 		fmt.Fprintf(stderr, "ai-attn: failed to write state record: %v\n", err)
 		return exitError
+	}
+	if cfg.OSC7501 {
+		if body, ok := programStatus(state, reason); ok {
+			emitProgramStatus(agent, body, stderr)
+		}
 	}
 
 	return exitOK
