@@ -113,6 +113,7 @@ Each `set-state` call refreshes `updated_at`, so `age_seconds` reflects how long
 | `age_seconds` | Seconds since `updated_at`. |
 | `pane_id` | Auto-populated from `$TMUX_PANE` when the hook runs inside tmux. For relay records (e.g., from [pmux](https://github.com/cosmicbuffalo/pmux)), this is the outer pane where attention should be displayed. |
 | `socket` | Tmux server socket that owns `pane_id`. Hooks populate it from the first field of `$TMUX`; relay producers can pass it with `--socket`. Empty or missing means the producer was older or outside tmux, and consumers should treat it as matching any server. |
+| `waiting_agent_id`, `waiting_tool` | Claude-shaped agents only, on `waiting` records: the subagent that is waiting (empty for the main agent) and the tool its permission request names. Tool events from another agent, or a parallel tool finishing, leave the record waiting. Omitted when empty. |
 
 #### Example: tmux status bar indicator
 

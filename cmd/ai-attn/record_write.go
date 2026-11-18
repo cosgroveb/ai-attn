@@ -90,18 +90,30 @@ func readRecord(path string) (Record, error) {
 // isLateInTurnWrite) and setup installs the in-turn Claude hooks as
 // synchronous.
 func writeStateRecord(identity sessionIdentity, state, reason string) (Record, error) {
+	return writeStateRecordWaitingOn(identity, state, reason, waitingSource{})
+}
+
+// writeStateRecordWaitingOn is writeStateRecord for a record that also names
+// what a "waiting" state is blocked on. The source is dropped for any other
+// state.
+func writeStateRecordWaitingOn(identity sessionIdentity, state, reason string, source waitingSource) (Record, error) {
 	key := sessionKey(identity.Agent, identity.SessionID, identity.PaneID, identity.Socket)
+	if state != "waiting" {
+		source = waitingSource{}
+	}
 
 	record := Record{
-		Agent:      identity.Agent,
-		SessionKey: key,
-		State:      state,
-		Reason:     reason,
-		UpdatedAt:  time.Now().Unix(),
-		CWD:        identity.CWD,
-		SessionID:  identity.SessionID,
-		PaneID:     identity.PaneID,
-		Socket:     identity.Socket,
+		WaitingAgentID: source.AgentID,
+		WaitingTool:    source.Tool,
+		Agent:          identity.Agent,
+		SessionKey:     key,
+		State:          state,
+		Reason:         reason,
+		UpdatedAt:      time.Now().Unix(),
+		CWD:            identity.CWD,
+		SessionID:      identity.SessionID,
+		PaneID:         identity.PaneID,
+		Socket:         identity.Socket,
 	}
 	if err := writeJSON(stateFile(key), record); err != nil {
 		return Record{}, err
