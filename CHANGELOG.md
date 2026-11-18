@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.6.1] - 2026-11-18
+
+### Fixed
+
+- A Claude Code session waiting on a question or permission prompt no longer
+  shows as working while other tool calls finish. Claude Code runs hooks for
+  subagents under the parent's `session_id`, so a background subagent's tool
+  calls flipped the waiting session back to `working`, and it stayed that way
+  until the prompt was answered. A sibling tool call that the agent started in
+  the same turn, finishing after the prompt opened, did the same. A waiting
+  record now names the agent (`waiting_agent_id`, empty for the main agent)
+  and tool (`waiting_tool`) it is blocked on. A tool event clears it only when
+  it comes from that agent and is either a new tool call starting or the
+  prompted tool finishing.
+
 ## [0.6.0] - 2026-11-12
 
 ### Added
@@ -241,6 +256,7 @@ Initial public release.
 - CI pipeline with formatting, linting, and test checks
 - Automated multi-platform release builds via GitHub Actions
 
+[0.6.1]: https://github.com/cosmicbuffalo/ai-attn/releases/tag/v0.6.1
 [0.6.0]: https://github.com/cosmicbuffalo/ai-attn/releases/tag/v0.6.0
 [0.5.0]: https://github.com/cosmicbuffalo/ai-attn/releases/tag/v0.5.0
 [0.4.1]: https://github.com/cosmicbuffalo/ai-attn/releases/tag/v0.4.1
