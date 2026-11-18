@@ -933,3 +933,104 @@ func TestHookCortexAgent(t *testing.T) {
 		t.Fatalf("expected record removed after SessionEnd, err=%v", err)
 	}
 }
+
+// claudeHookSequence runs Claude hook payloads in order for one session and
+// returns the resulting record.
+func claudeHookSequence(t *testing.T, sessionID string, payloads ...string) Record {
+	t.Helper()
+	for _, p := range payloads {
+		var stdout, stderr bytes.Buffer
+		payload := `{"session_id":"` + sessionID + `","cwd":"/work",` + p[1:]
+		if rc := run([]string{"hook", "--agent", "claude"}, strings.NewReader(payload), &stdout, &stderr); rc != exitOK {
+			t.Fatalf("hook %s rc=%d stderr=%s", p, rc, stderr.String())
+		}
+	}
+	rec, err := readRecord(stateFile(sessionKey("claude", sessionID, "", "")))
+	if err != nil {
+		t.Fatalf("read record: %v", err)
+	}
+	return rec
+}
+
+// TestHookClaudeSubagentToolUseKeepsMainAgentWaiting reproduces a session
+// shown as working while its AskUserQuestion dialog was open: a background
+// subagent finished a tool call under the parent's session_id.
+func TestHookClaudeSubagentToolUseKeepsMainAgentWaiting(t *testing.T) {
+	withTempHome(t)
+	rec := claudeHookSequence(t, "sub-1",
+		`{"hook_event_name":"UserPromptSubmit"}`,
+		`{"hook_event_name":"PreToolUse","tool_name":"Agent","tool_use_id":"t1"}`,
+		`{"hook_event_name":"PostToolUse","tool_name":"Agent","tool_use_id":"t1"}`,
+		`{"hook_event_name":"PreToolUse","tool_name":"AskUserQuestion","tool_use_id":"t2"}`,
+		`{"hook_event_name":"PermissionRequest","tool_name":"AskUserQuestion"}`,
+		`{"hook_event_name":"PreToolUse","tool_name":"Bash","tool_use_id":"s1","agent_id":"a1","agent_type":"general-purpose"}`,
+		`{"hook_event_name":"Notification","notification_type":"permission_prompt"}`,
+		`{"hook_event_name":"PostToolUse","tool_name":"Bash","tool_use_id":"s1","agent_id":"a1"}`,
+		`{"hook_event_name":"PostToolUseFailure","tool_name":"Bash","tool_use_id":"s2","agent_id":"a1"}`,
+		`{"hook_event_name":"PostToolUse","tool_name":"SubagentHandback","tool_use_id":"s3","agent_id":"a1"}`,
+	)
+	if rec.State != "waiting" || rec.WaitingTool != "AskUserQuestion" || rec.WaitingAgentID != "" {
+		t.Fatalf("expected main agent still waiting on AskUserQuestion, got %+v", rec)
+	}
+
+	// Answering the question finishes the prompted tool: working again.
+	rec = claudeHookSequence(t, "sub-1", `{"hook_event_name":"PostToolUse","tool_name":"AskUserQuestion","tool_use_id":"t2"}`)
+	if rec.State != "working" || rec.WaitingTool != "" {
+		t.Fatalf("expected working after the answer, got %+v", rec)
+	}
+}
+
+// TestHookClaudeParallelSiblingKeepsWaiting covers one agent calling tools in
+// parallel: the sibling's PostToolUse lands after the prompt opened.
+func TestHookClaudeParallelSiblingKeepsWaiting(t *testing.T) {
+	withTempHome(t)
+	rec := claudeHookSequence(t, "par-1",
+		`{"hook_event_name":"PreToolUse","tool_name":"Bash","tool_use_id":"t1"}`,
+		`{"hook_event_name":"PreToolUse","tool_name":"AskUserQuestion","tool_use_id":"t2"}`,
+		`{"hook_event_name":"PermissionRequest","tool_name":"AskUserQuestion"}`,
+		`{"hook_event_name":"PostToolUse","tool_name":"Bash","tool_use_id":"t1"}`,
+	)
+	if rec.State != "waiting" {
+		t.Fatalf("expected waiting after sibling finished, got %+v", rec)
+	}
+
+	// A new tool call from the waiting agent means the prompt was answered.
+	rec = claudeHookSequence(t, "par-1", `{"hook_event_name":"PreToolUse","tool_name":"Read","tool_use_id":"t3"}`)
+	if rec.State != "working" {
+		t.Fatalf("expected working once the agent moved on, got %+v", rec)
+	}
+}
+
+// TestHookClaudeSubagentPromptClearsOnItsOwnTool verifies a subagent's own
+// permission prompt is waiting, is not cleared by the main agent's tools, and
+// clears when the subagent's prompted tool finishes.
+func TestHookClaudeSubagentPromptClearsOnItsOwnTool(t *testing.T) {
+	withTempHome(t)
+	rec := claudeHookSequence(t, "sub-2",
+		`{"hook_event_name":"PreToolUse","tool_name":"Bash","tool_use_id":"s1","agent_id":"a1"}`,
+		`{"hook_event_name":"PermissionRequest","tool_name":"Bash","agent_id":"a1"}`,
+		`{"hook_event_name":"PreToolUse","tool_name":"Read","tool_use_id":"m1"}`,
+		`{"hook_event_name":"PostToolUse","tool_name":"Read","tool_use_id":"m1"}`,
+	)
+	if rec.State != "waiting" || rec.WaitingAgentID != "a1" || rec.WaitingTool != "Bash" {
+		t.Fatalf("expected waiting on subagent a1's Bash, got %+v", rec)
+	}
+	rec = claudeHookSequence(t, "sub-2", `{"hook_event_name":"PostToolUse","tool_name":"Bash","tool_use_id":"s1","agent_id":"a1"}`)
+	if rec.State != "working" || rec.WaitingAgentID != "" {
+		t.Fatalf("expected working after subagent's tool ran, got %+v", rec)
+	}
+}
+
+// TestHookClaudeNotificationOnlyWaitingStillClears keeps the old behaviour
+// when waiting came from a Notification with nothing else to go on: the main
+// agent's next tool event clears it.
+func TestHookClaudeNotificationOnlyWaitingStillClears(t *testing.T) {
+	withTempHome(t)
+	rec := claudeHookSequence(t, "note-1",
+		`{"hook_event_name":"Notification","notification_type":"permission_prompt"}`,
+		`{"hook_event_name":"PostToolUse","tool_name":"Bash","tool_use_id":"t1"}`,
+	)
+	if rec.State != "working" {
+		t.Fatalf("expected working, got %+v", rec)
+	}
+}

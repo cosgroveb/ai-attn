@@ -23,6 +23,12 @@ type Record struct {
 	// another. Empty means "unknown server" — treated as matching any, so
 	// records from older producers degrade to the previous behaviour.
 	Socket string `json:"socket,omitempty"`
+	// WaitingAgentID and WaitingTool describe what a Claude-shaped "waiting"
+	// record is blocked on: the subagent that asked ("" for the main agent)
+	// and the tool its permission request names. Tool events from anything
+	// else must not clear the record (see toolEventKeepsWaiting).
+	WaitingAgentID string `json:"waiting_agent_id,omitempty"`
+	WaitingTool    string `json:"waiting_tool,omitempty"`
 }
 
 type listPayload struct {

@@ -161,7 +161,64 @@ func hookClaudeShaped(agent, hookPayload string, stderr io.Writer) int {
 		return exitOK
 	}
 
-	return writeHookState(state, agent, sessionID, cwd, reason, stderr)
+	source := waitingSource{
+		AgentID: stringFromMap(payload, "agent_id"),
+		Tool:    stringFromMap(payload, "tool_name"),
+	}
+	identity := sessionIdentity{
+		Agent:     agent,
+		SessionID: sessionID,
+		PaneID:    os.Getenv("TMUX_PANE"),
+		Socket:    tmuxSocket(),
+	}
+	existing, err := readRecord(stateFile(sessionKey(identity.Agent, identity.SessionID, identity.PaneID, identity.Socket)))
+	if err == nil && existing.State == "waiting" {
+		switch event {
+		case "PreToolUse", "PostToolUse", "PostToolUseFailure":
+			if toolEventKeepsWaiting(existing, event, source) {
+				return exitOK
+			}
+		case "Notification":
+			// Notifications name neither the agent nor the tool, so a
+			// permission_prompt that follows a PermissionRequest keeps what
+			// the request recorded.
+			source = waitingSource{AgentID: existing.WaitingAgentID, Tool: existing.WaitingTool}
+		}
+	}
+
+	return writeHookStateWaitingOn(state, agent, sessionID, cwd, reason, source, stderr)
+}
+
+// waitingSource names what a waiting record is blocked on: the subagent that
+// asked ("" for the main agent) and the tool its permission request names.
+type waitingSource struct {
+	AgentID string
+	Tool    string
+}
+
+// toolEventKeepsWaiting reports whether a Claude tool event must leave a
+// "waiting" record alone because it is not the waiting agent moving on.
+//
+// Claude Code runs hooks for subagents under the parent's session_id, with
+// agent_id set. A background subagent's tool calls therefore keep arriving
+// while the main agent sits on a question or permission prompt, and used to
+// flip the session back to "working" for as long as the prompt stayed open.
+// The same happens within one agent when it calls tools in parallel: the
+// prompt opens for one call while a sibling call is still running, and the
+// sibling's PostToolUse lands after the PermissionRequest.
+//
+// So a tool event clears waiting only when it comes from the agent that is
+// waiting and is either a new tool call starting (PreToolUse: the prompt was
+// answered and the agent moved on) or the prompted tool finishing.
+// PermissionRequest carries no tool_use_id, so the tool is matched by name.
+func toolEventKeepsWaiting(existing Record, event string, source waitingSource) bool {
+	if source.AgentID != existing.WaitingAgentID {
+		return true
+	}
+	if event == "PreToolUse" {
+		return false
+	}
+	return existing.WaitingTool != "" && source.Tool != existing.WaitingTool
 }
 
 // hookCodex parses a Codex hook payload (plain text or JSON) and writes the corresponding state record.
@@ -500,6 +557,12 @@ func matchCodexEvent(event string) (state string, ok bool) {
 
 // writeHookState is the shared tail of all hook handlers; it loads config and persists the state record.
 func writeHookState(state string, agent, sessionID, cwd, reason string, stderr io.Writer) int {
+	return writeHookStateWaitingOn(state, agent, sessionID, cwd, reason, waitingSource{}, stderr)
+}
+
+// writeHookStateWaitingOn is writeHookState for Claude-shaped hooks, which
+// also record what a waiting state is blocked on.
+func writeHookStateWaitingOn(state string, agent, sessionID, cwd, reason string, source waitingSource, stderr io.Writer) int {
 	cfg := loadConfig(stderr)
 	if state == "waiting" && !cfg.Enabled {
 		return exitOK
@@ -521,7 +584,7 @@ func writeHookState(state string, agent, sessionID, cwd, reason string, stderr i
 		return exitOK
 	}
 
-	if _, err := writeStateRecord(identity, state, reason); err != nil {
+	if _, err := writeStateRecordWaitingOn(identity, state, reason, source); err != nil {
 		fmt.Fprintf(stderr, "ai-attn: failed to write state record: %v\n", err)
 		return exitError
 	}
