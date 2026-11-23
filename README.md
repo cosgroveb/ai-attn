@@ -259,6 +259,7 @@ Default config: `~/.config/ai-attn/config.toml` — optional; built-in defaults 
 enabled = true
 ttl_seconds = 7776000
 osc7501 = false
+# osc7501_agents = ["cortex", "gemini"]
 ```
 
 | Field | Description |
@@ -266,6 +267,7 @@ osc7501 = false
 | `enabled` | Master switch. When `false`, `set-state` is a no-op. |
 | `ttl_seconds` | Seconds before a record expires. Default: 7776000 (90 days). GC removes any record older than `ttl_seconds` regardless of state. |
 | `osc7501` | When `true`, hooks also write each state change to the agent's terminal as an [OSC 7501 program status](https://www.superlogical.com/rex/docs/build/program-status) report (`working`, `blocked`, `done`, `error`, and `clear` at session end, each with a fixed message such as `Needs permission`), so terminals and tmux builds that support it can show the agent's state per pane without a polling consumer. Hooks find the terminal by walking up to the nearest parent process that has one, since some agents run hooks without a terminal of their own. Default: `false`. |
+| `osc7501_agents` | Agents whose hooks send OSC 7501 reports when `osc7501` is `true`. Unset means every supported agent except those that report OSC 7501 themselves (`claude`, `codex`, `opencode`, `muse`, `agy`, `copilot`, `grok`, `pi`, `omp`), which today leaves `cortex` and `gemini`. A listed agent always reports, even one that reports natively. `[]` turns reports off for every agent. |
 
 ## Platform Notes
 

@@ -343,7 +343,7 @@ func endSession(agent, sessionID string, stderr io.Writer) {
 	if err := removeCompatibleLegacyRecord(identity, key); err != nil {
 		fmt.Fprintf(stderr, "ai-attn: warning: failed to remove legacy state file: %v\n", err)
 	}
-	if loadConfig(stderr).OSC7501 {
+	if loadConfig(stderr).emitsOSC7501(agent) {
 		emitProgramStatus(agent, "state=clear", stderr)
 	}
 }
@@ -567,7 +567,7 @@ func writeHookStateWaitingOn(state string, agent, sessionID, cwd, reason string,
 		fmt.Fprintf(stderr, "ai-attn: failed to write state record: %v\n", err)
 		return exitError
 	}
-	if cfg.OSC7501 {
+	if cfg.emitsOSC7501(agent) {
 		if body, ok := programStatus(state, reason); ok {
 			emitProgramStatus(agent, body, stderr)
 		}

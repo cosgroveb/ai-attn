@@ -10,6 +10,51 @@ import (
 	"strings"
 )
 
+// nativeOSC7501Agents are agents that report OSC 7501 program status
+// themselves in current releases. ai-attn leaves them out of the default
+// osc7501_agents so their own reports aren't overwritten by a second one.
+var nativeOSC7501Agents = map[string]bool{
+	"claude":   true, // Claude Code 2.1.295 (CHANGELOG)
+	"codex":    true, // Codex rust-v0.163.0 (codex-rs/tui/src/terminal_program_status.rs)
+	"opencode": true, // OpenCode v2.1.0 (packages/tui/src/context/program-status.ts)
+	"agy":      true, // Antigravity CLI 1.4.0 (release notes)
+	"copilot":  true, // Copilot CLI 1.0.106 (bundled changelog; uses tmux passthrough)
+	"grok":     true, // Grok Build 1.0.52 (program_status = "on" needed inside tmux)
+	"pi":       true, // Pi 1.1.0 (packages/tui/src/program-status.ts)
+	"omp":      true, // Oh My Pi v18.8.7 (packages/coding-agent/src/utils/run-status.ts)
+	"muse":     true, // Muse Code (changelog)
+}
+
+// defaultOSC7501Agents returns the agents that emit when osc7501_agents is
+// unset: every supported agent that does not report OSC 7501 itself.
+func defaultOSC7501Agents() []string {
+	var agents []string
+	for _, agent := range allAgents {
+		if !nativeOSC7501Agents[agent] {
+			agents = append(agents, agent)
+		}
+	}
+	return agents
+}
+
+// emitsOSC7501 reports whether hooks for agent write OSC 7501 reports.
+// An explicit osc7501_agents list is used as written, so listing a native
+// agent turns its reports on.
+func (c Config) emitsOSC7501(agent string) bool {
+	if !c.OSC7501 {
+		return false
+	}
+	if c.OSC7501Agents == nil {
+		return !nativeOSC7501Agents[agent]
+	}
+	for _, a := range c.OSC7501Agents {
+		if a == agent {
+			return true
+		}
+	}
+	return false
+}
+
 // programStatus maps an ai-attn state and reason to the body of an OSC 7501
 // program status report
 // (https://www.superlogical.com/rex/docs/build/program-status). The message

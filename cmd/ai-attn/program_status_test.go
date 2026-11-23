@@ -76,6 +76,51 @@ func TestProgramStatus(t *testing.T) {
 	}
 }
 
+func TestEmitsOSC7501(t *testing.T) {
+	tests := []struct {
+		name  string
+		cfg   Config
+		agent string
+		want  bool
+	}{
+		{"off", Config{}, "gemini", false},
+		{"default emits non-native", Config{OSC7501: true}, "gemini", true},
+		{"default skips native", Config{OSC7501: true}, "claude", false},
+		{"explicit forces native", Config{OSC7501: true, OSC7501Agents: []string{"claude"}}, "claude", true},
+		{"explicit excludes unlisted", Config{OSC7501: true, OSC7501Agents: []string{"claude"}}, "gemini", false},
+		{"empty list emits nothing", Config{OSC7501: true, OSC7501Agents: []string{}}, "gemini", false},
+	}
+	for _, tt := range tests {
+		if got := tt.cfg.emitsOSC7501(tt.agent); got != tt.want {
+			t.Errorf("%s: emitsOSC7501(%q) = %t, want %t", tt.name, tt.agent, got, tt.want)
+		}
+	}
+}
+
+func TestParseConfigDistinguishesUnsetAndEmptyAgents(t *testing.T) {
+	unset, err := parseConfig([]byte("osc7501 = true\n"))
+	if err != nil || unset.OSC7501Agents != nil {
+		t.Fatalf("unset osc7501_agents: %+v, %v", unset, err)
+	}
+	empty, err := parseConfig([]byte("osc7501 = true\nosc7501_agents = []\n"))
+	if err != nil || empty.OSC7501Agents == nil || len(empty.OSC7501Agents) != 0 {
+		t.Fatalf("empty osc7501_agents: %+v, %v", empty, err)
+	}
+}
+
+func TestDefaultOSC7501AgentsExcludesNative(t *testing.T) {
+	for _, agent := range defaultOSC7501Agents() {
+		if nativeOSC7501Agents[agent] {
+			t.Errorf("default list includes native agent %q", agent)
+		}
+	}
+	for agent := range nativeOSC7501Agents {
+		if !strings.Contains(strings.Join(allAgents, ","), agent) {
+			t.Errorf("native list names unsupported agent %q", agent)
+		}
+	}
+}
+
 func TestHookEmitsProgramStatusWhenEnabled(t *testing.T) {
 	writeConfig(t, withTempHome(t), "osc7501 = true\n")
 	tty := withFakeTTY(t)
@@ -92,6 +137,27 @@ func TestHookEmitsProgramStatusWhenEnabled(t *testing.T) {
 		if got := hookReport(t, tty, "gemini", tt.payload); got != tt.want {
 			t.Errorf("%s: tty got %q, want %q", tt.payload, got, tt.want)
 		}
+	}
+}
+
+func TestHookSkipsNativeAgentByDefault(t *testing.T) {
+	writeConfig(t, withTempHome(t), "osc7501 = true\n")
+	tty := withFakeTTY(t)
+
+	for _, event := range []string{"UserPromptSubmit", "SessionEnd"} {
+		if got := hookReport(t, tty, "claude", `{"hook_event_name":"`+event+`","session_id":"osc-2","cwd":"/work"}`); got != "" {
+			t.Errorf("%s: expected no report for native claude, got %q", event, got)
+		}
+	}
+}
+
+func TestHookExplicitAgentsForceNativeAgent(t *testing.T) {
+	writeConfig(t, withTempHome(t), "osc7501 = true\nosc7501_agents = [\"claude\"]\n")
+	tty := withFakeTTY(t)
+
+	want := "\x1b]7501;state=working:msg=V29ya2luZw==:app=claude\x1b\\"
+	if got := hookReport(t, tty, "claude", `{"hook_event_name":"UserPromptSubmit","session_id":"osc-3","cwd":"/work"}`); got != want {
+		t.Fatalf("tty got %q, want %q", got, want)
 	}
 }
 

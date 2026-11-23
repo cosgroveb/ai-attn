@@ -14,6 +14,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   message per state, so any terminal or tmux build that supports the
   protocol can show per-pane agent state without a polling consumer. Off by
   default.
+- `osc7501_agents` config key choosing which agents report. By default it
+  leaves out agents that already report OSC 7501 themselves, so today only
+  Cortex Code and Gemini CLI hooks report.
 
 ## [0.6.1] - 2026-11-18
 
