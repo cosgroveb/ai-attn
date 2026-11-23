@@ -16,7 +16,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   default.
 - `osc7501_agents` config key choosing which agents report. By default it
   leaves out agents that already report OSC 7501 themselves, so today only
-  Cortex Code and Gemini CLI hooks report.
+  Cortex Code and Gemini CLI hooks report. `ai-attn doctor` prints the list
+  in effect.
 
 ## [0.6.1] - 2026-11-18
 

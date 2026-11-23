@@ -186,3 +186,20 @@ func TestHookWithoutTerminalStillRecordsState(t *testing.T) {
 		t.Fatalf("expected done: rc=%d out=%s", rc, out)
 	}
 }
+
+func TestDoctorReportsOSC7501Agents(t *testing.T) {
+	home := withTempHome(t)
+
+	_, out, _ := runCLI(t, "doctor")
+	if want := "osc7501_agents=" + strings.Join(defaultOSC7501Agents(), ",") + " (default)"; !strings.Contains(out, want) {
+		t.Fatalf("doctor output missing %q:\n%s", want, out)
+	}
+
+	writeConfig(t, home, "osc7501 = true\nosc7501_agents = [\"claude\", \"nope\"]\n")
+	_, out, _ = runCLI(t, "doctor")
+	for _, want := range []string{"osc7501_agents=claude,nope\n", "osc7501_agents_unknown=nope\n"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("doctor output missing %q:\n%s", want, out)
+		}
+	}
+}

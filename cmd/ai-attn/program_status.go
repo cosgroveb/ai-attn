@@ -137,3 +137,23 @@ func emitProgramStatus(agent, body string, stderr io.Writer) {
 		fmt.Fprintf(stderr, "ai-attn: warning: failed to write program status: %v\n", err)
 	}
 }
+
+// sortedNativeOSC7501Agents returns nativeOSC7501Agents in allAgents order.
+func sortedNativeOSC7501Agents() []string {
+	var agents []string
+	for _, agent := range allAgents {
+		if nativeOSC7501Agents[agent] {
+			agents = append(agents, agent)
+		}
+	}
+	return agents
+}
+
+// quotedList formats agents as the elements of a TOML string array.
+func quotedList(agents []string) string {
+	quoted := make([]string, len(agents))
+	for i, agent := range agents {
+		quoted[i] = strconv.Quote(agent)
+	}
+	return strings.Join(quoted, ", ")
+}
