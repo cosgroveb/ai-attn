@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- `osc7501` config key. When `true`, hooks also write each state change to
+  the agent's terminal as an OSC 7501 program status report with a fixed
+  message per state, so any terminal or tmux build that supports the
+  protocol can show per-pane agent state without a polling consumer. Off by
+  default.
+
 ## [0.6.1] - 2026-11-18
 
 ### Fixed

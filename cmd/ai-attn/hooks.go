@@ -327,7 +327,8 @@ func opencodeSessionID(payload map[string]any) string {
 	return stringFromMap(payload, "sessionID")
 }
 
-// endSession deletes a session's state record when the session ends.
+// endSession deletes a session's state record and clears its OSC 7501
+// status when the session ends.
 func endSession(agent, sessionID string, stderr io.Writer) {
 	identity := sessionIdentity{
 		Agent:     agent,
@@ -341,6 +342,9 @@ func endSession(agent, sessionID string, stderr io.Writer) {
 	}
 	if err := removeCompatibleLegacyRecord(identity, key); err != nil {
 		fmt.Fprintf(stderr, "ai-attn: warning: failed to remove legacy state file: %v\n", err)
+	}
+	if loadConfig(stderr).OSC7501 {
+		emitProgramStatus(agent, "state=clear", stderr)
 	}
 }
 
@@ -562,6 +566,11 @@ func writeHookStateWaitingOn(state string, agent, sessionID, cwd, reason string,
 	if _, err := writeStateRecordWaitingOn(identity, state, reason, source); err != nil {
 		fmt.Fprintf(stderr, "ai-attn: failed to write state record: %v\n", err)
 		return exitError
+	}
+	if cfg.OSC7501 {
+		if body, ok := programStatus(state, reason); ok {
+			emitProgramStatus(agent, body, stderr)
+		}
 	}
 
 	return exitOK
