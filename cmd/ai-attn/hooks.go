@@ -142,20 +142,7 @@ func hookClaudeShaped(agent, hookPayload string, stderr io.Writer) int {
 		state = "stopped"
 		reason = event
 	case "SessionEnd":
-		paneID := os.Getenv("TMUX_PANE")
-		identity := sessionIdentity{
-			Agent:     agent,
-			SessionID: sessionID,
-			PaneID:    paneID,
-			Socket:    tmuxSocket(),
-		}
-		key := sessionKey(identity.Agent, identity.SessionID, identity.PaneID, identity.Socket)
-		if err := os.Remove(stateFile(key)); err != nil && !os.IsNotExist(err) {
-			fmt.Fprintf(stderr, "ai-attn: warning: failed to remove state file: %v\n", err)
-		}
-		if err := removeCompatibleLegacyRecord(identity, key); err != nil {
-			fmt.Fprintf(stderr, "ai-attn: warning: failed to remove legacy state file: %v\n", err)
-		}
+		endSession(agent, sessionID, stderr)
 		return exitOK
 	default:
 		return exitOK
@@ -290,7 +277,7 @@ func hookOpencode(hookPayload string, stderr io.Writer) int {
 
 	if eventType == "session.deleted" {
 		if sessionID != "" {
-			removeSessionRecord("opencode", sessionID, stderr)
+			endSession("opencode", sessionID, stderr)
 		}
 		return exitOK
 	}
@@ -340,8 +327,8 @@ func opencodeSessionID(payload map[string]any) string {
 	return stringFromMap(payload, "sessionID")
 }
 
-// removeSessionRecord deletes a session's state record when the session ends.
-func removeSessionRecord(agent, sessionID string, stderr io.Writer) {
+// endSession deletes a session's state record when the session ends.
+func endSession(agent, sessionID string, stderr io.Writer) {
 	identity := sessionIdentity{
 		Agent:     agent,
 		SessionID: sessionID,
@@ -437,19 +424,7 @@ func hookMuse(hookPayload string, stderr io.Writer) int {
 	}
 
 	if event == "SessionEnd" {
-		identity := sessionIdentity{
-			Agent:     "muse",
-			SessionID: sessionID,
-			PaneID:    os.Getenv("TMUX_PANE"),
-			Socket:    tmuxSocket(),
-		}
-		key := sessionKey(identity.Agent, identity.SessionID, identity.PaneID, identity.Socket)
-		if err := os.Remove(stateFile(key)); err != nil && !os.IsNotExist(err) {
-			fmt.Fprintf(stderr, "ai-attn: warning: failed to remove state file: %v\n", err)
-		}
-		if err := removeCompatibleLegacyRecord(identity, key); err != nil {
-			fmt.Fprintf(stderr, "ai-attn: warning: failed to remove legacy state file: %v\n", err)
-		}
+		endSession("muse", sessionID, stderr)
 		return exitOK
 	}
 
