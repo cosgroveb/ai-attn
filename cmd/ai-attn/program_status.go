@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"slices"
 	"strconv"
 	"strings"
 )
@@ -41,18 +42,21 @@ func defaultOSC7501Agents() []string {
 // An explicit osc7501_agents list is used as written, so listing a native
 // agent turns its reports on.
 func (c Config) emitsOSC7501(agent string) bool {
-	if !c.OSC7501 {
+	if !c.Enabled || !c.OSC7501 {
 		return false
 	}
 	if c.OSC7501Agents == nil {
 		return !nativeOSC7501Agents[agent]
 	}
-	for _, a := range c.OSC7501Agents {
-		if a == agent {
-			return true
-		}
+	return slices.Contains(c.OSC7501Agents, agent)
+}
+
+func matchesProgramStatus(record Record, identity sessionIdentity, body string) bool {
+	if record.PaneID != identity.PaneID || record.Socket != identity.Socket {
+		return false
 	}
-	return false
+	current, ok := programStatus(record.State, record.Reason)
+	return ok && current == body
 }
 
 // programStatus maps an ai-attn state and reason to the body of an OSC 7501
@@ -121,7 +125,7 @@ var terminalPath = func() string {
 // emitProgramStatus writes an OSC 7501 report for agent to the agent's
 // terminal, where the terminal or tmux shows it against the agent's pane.
 // Hooks with no terminal anywhere above them skip the report.
-func emitProgramStatus(agent, body string, stderr io.Writer) {
+func emitProgramStatus(agent, body string, current func() bool, stderr io.Writer) {
 	path := terminalPath()
 	if path == "" {
 		return
@@ -131,6 +135,9 @@ func emitProgramStatus(agent, body string, stderr io.Writer) {
 		return
 	}
 	defer tty.Close()
+	if !current() {
+		return
+	}
 	// One write, so the report cannot interleave with other output mid-sequence.
 	report := fmt.Sprintf("\x1b]7501;%s:app=%s\x1b\\", body, agent)
 	if _, err := io.WriteString(tty, report); err != nil {

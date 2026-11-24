@@ -344,7 +344,11 @@ func endSession(agent, sessionID string, stderr io.Writer) {
 		fmt.Fprintf(stderr, "ai-attn: warning: failed to remove legacy state file: %v\n", err)
 	}
 	if loadConfig(stderr).emitsOSC7501(agent) {
-		emitProgramStatus(agent, "state=clear", stderr)
+		path := stateFile(key)
+		emitProgramStatus(agent, "state=clear", func() bool {
+			_, err := os.Stat(path)
+			return os.IsNotExist(err)
+		}, stderr)
 	}
 }
 
@@ -559,18 +563,32 @@ func writeHookStateWaitingOn(state string, agent, sessionID, cwd, reason string,
 		Socket:    tmuxSocket(),
 	}
 
+	path := stateFile(sessionKey(identity.Agent, identity.SessionID, identity.PaneID, identity.Socket))
+
+	var reportBody string
+	shouldReport := false
+	if cfg.emitsOSC7501(agent) {
+		if body, ok := programStatus(state, reason); ok {
+			record, err := readRecord(path)
+			if err != nil || !matchesProgramStatus(record, identity, body) {
+				reportBody = body
+				shouldReport = true
+			}
+		}
+	}
+
 	if isLateInTurnWrite(identity, reason) {
 		return exitOK
 	}
-
 	if _, err := writeStateRecordWaitingOn(identity, state, reason, source); err != nil {
 		fmt.Fprintf(stderr, "ai-attn: failed to write state record: %v\n", err)
 		return exitError
 	}
-	if cfg.emitsOSC7501(agent) {
-		if body, ok := programStatus(state, reason); ok {
-			emitProgramStatus(agent, body, stderr)
-		}
+	if shouldReport {
+		emitProgramStatus(agent, reportBody, func() bool {
+			record, err := readRecord(path)
+			return err == nil && matchesProgramStatus(record, identity, reportBody)
+		}, stderr)
 	}
 
 	return exitOK

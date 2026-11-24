@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -83,12 +84,13 @@ func TestEmitsOSC7501(t *testing.T) {
 		agent string
 		want  bool
 	}{
-		{"off", Config{}, "gemini", false},
-		{"default emits non-native", Config{OSC7501: true}, "gemini", true},
-		{"default skips native", Config{OSC7501: true}, "claude", false},
-		{"explicit forces native", Config{OSC7501: true, OSC7501Agents: []string{"claude"}}, "claude", true},
-		{"explicit excludes unlisted", Config{OSC7501: true, OSC7501Agents: []string{"claude"}}, "gemini", false},
-		{"empty list emits nothing", Config{OSC7501: true, OSC7501Agents: []string{}}, "gemini", false},
+		{"off", Config{Enabled: true}, "gemini", false},
+		{"default emits non-native", Config{Enabled: true, OSC7501: true}, "gemini", true},
+		{"default skips native", Config{Enabled: true, OSC7501: true}, "claude", false},
+		{"explicit forces native", Config{Enabled: true, OSC7501: true, OSC7501Agents: []string{"claude"}}, "claude", true},
+		{"explicit excludes unlisted", Config{Enabled: true, OSC7501: true, OSC7501Agents: []string{"claude"}}, "gemini", false},
+		{"empty list emits nothing", Config{Enabled: true, OSC7501: true, OSC7501Agents: []string{}}, "gemini", false},
+		{"disabled", Config{OSC7501: true, OSC7501Agents: []string{"gemini"}}, "gemini", false},
 	}
 	for _, tt := range tests {
 		if got := tt.cfg.emitsOSC7501(tt.agent); got != tt.want {
@@ -115,7 +117,7 @@ func TestDefaultOSC7501AgentsExcludesNative(t *testing.T) {
 		}
 	}
 	for agent := range nativeOSC7501Agents {
-		if !strings.Contains(strings.Join(allAgents, ","), agent) {
+		if !slices.Contains(allAgents, agent) {
 			t.Errorf("native list names unsupported agent %q", agent)
 		}
 	}
@@ -167,6 +169,199 @@ func TestHookSkipsProgramStatusByDefault(t *testing.T) {
 
 	if got := hookReport(t, tty, "gemini", `{"hook_event_name":"BeforeAgent","session_id":"osc-4"}`); got != "" {
 		t.Fatalf("expected no report with osc7501 off, got %q", got)
+	}
+}
+
+func TestHookDoesNotReportWhenDisabled(t *testing.T) {
+	home := withTempHome(t)
+	writeConfig(t, home, "enabled = false\nosc7501 = true\n")
+	tty := withFakeTTY(t)
+	lookups := 0
+	terminalPath = func() string { lookups++; return tty }
+	key := sessionKey("gemini", "disabled-osc", "", "")
+	events := []struct {
+		payload string
+		state   string
+	}{
+		{`{"hook_event_name":"BeforeAgent","session_id":"disabled-osc"}`, "working"},
+		{`{"hook_event_name":"Notification","notification_type":"ToolPermission","session_id":"disabled-osc"}`, "working"},
+		{`{"hook_event_name":"AfterAgent","session_id":"disabled-osc"}`, "done"},
+	}
+	for _, event := range events {
+		if got := hookReport(t, tty, "gemini", event.payload); got != "" {
+			t.Fatalf("unexpected report %q", got)
+		}
+		record, err := readRecord(stateFile(key))
+		if err != nil || record.State != event.state {
+			t.Fatalf("record = %+v, %v; want state %q", record, err, event.state)
+		}
+	}
+	if got := hookReport(t, tty, "gemini", `{"hook_event_name":"SessionEnd","session_id":"disabled-osc"}`); got != "" {
+		t.Fatalf("unexpected session-end report %q", got)
+	}
+	if _, err := readRecord(stateFile(key)); !os.IsNotExist(err) {
+		t.Fatalf("record still exists or read failed: %v", err)
+	}
+	if lookups != 0 {
+		t.Fatalf("terminal lookups = %d, want 0", lookups)
+	}
+}
+
+func TestHookReportsOnlyProgramStatusChanges(t *testing.T) {
+	home := withTempHome(t)
+	writeConfig(t, home, "osc7501 = true\n")
+	tty := withFakeTTY(t)
+	lookups := 0
+	terminalPath = func() string { lookups++; return tty }
+	const session = "osc-heartbeat"
+	const prefix = "\x1b]7501;"
+	const suffix = ":app=cortex\x1b\\"
+	cases := []struct {
+		name, payload, body string
+		lookupDelta         int
+	}{
+		{"prompt", `{"hook_event_name":"UserPromptSubmit","session_id":"` + session + `"}`, "state=working:msg=V29ya2luZw==", 1},
+		{"pre tool", `{"hook_event_name":"PreToolUse","session_id":"` + session + `"}`, "", 0},
+		{"post tool", `{"hook_event_name":"PostToolUse","session_id":"` + session + `","cwd":"/new"}`, "", 0},
+		{"tool failure", `{"hook_event_name":"PostToolUseFailure","session_id":"` + session + `"}`, "", 0},
+		{"permission", `{"hook_event_name":"PermissionRequest","session_id":"` + session + `"}`, "state=blocked:kind=permission:msg=TmVlZHMgcGVybWlzc2lvbg==", 1},
+		{"same permission", `{"hook_event_name":"Notification","notification_type":"permission_prompt","session_id":"` + session + `"}`, "", 0},
+		{"question", `{"hook_event_name":"Notification","notification_type":"elicitation_dialog","session_id":"` + session + `"}`, "state=blocked:kind=question:msg=SGFzIGEgcXVlc3Rpb24=", 1},
+		{"stop", `{"hook_event_name":"Stop","session_id":"` + session + `"}`, "state=done:msg=VHVybiBjb21wbGV0ZQ==", 1},
+		{"late tool", `{"hook_event_name":"PostToolUse","session_id":"` + session + `"}`, "", 0},
+		{"next prompt", `{"hook_event_name":"UserPromptSubmit","session_id":"` + session + `"}`, "state=working:msg=V29ya2luZw==", 1},
+	}
+	key := sessionKey("cortex", session, "", "")
+	for i, tc := range cases {
+		if i == 2 {
+			record, err := readRecord(stateFile(key))
+			if err != nil {
+				t.Fatal(err)
+			}
+			record.UpdatedAt = 1
+			if err := writeJSON(stateFile(key), record); err != nil {
+				t.Fatal(err)
+			}
+		}
+		before := lookups
+		got := hookReport(t, tty, "cortex", tc.payload)
+		want := ""
+		if tc.body != "" {
+			want = prefix + tc.body + suffix
+		}
+		if got != want {
+			t.Errorf("%s report = %q, want %q", tc.name, got, want)
+		}
+		if delta := lookups - before; delta != tc.lookupDelta {
+			t.Errorf("%s lookup delta = %d, want %d", tc.name, delta, tc.lookupDelta)
+		}
+		if tc.name == "post tool" {
+			record, err := readRecord(stateFile(key))
+			if err != nil || record.State != "working" || record.Reason != "PostToolUse" || record.CWD != "/new" || record.UpdatedAt <= 1 {
+				t.Fatalf("post-tool record = %+v, %v", record, err)
+			}
+		}
+		if tc.name == "tool failure" {
+			record, _ := readRecord(stateFile(key))
+			if record.State != "stopped" {
+				t.Fatalf("tool failure state = %q", record.State)
+			}
+		}
+		if tc.name == "late tool" {
+			record, _ := readRecord(stateFile(key))
+			if record.State != "done" {
+				t.Fatalf("late tool state = %q", record.State)
+			}
+		}
+	}
+}
+
+func TestHookReportsProgramStatusAfterPaneChange(t *testing.T) {
+	writeConfig(t, withTempHome(t), "osc7501 = true\n")
+	tty := withFakeTTY(t)
+	t.Setenv("TMUX", "/osc-test,1,1")
+	t.Setenv("TMUX_PANE", "%1")
+	want := "\x1b]7501;state=working:msg=V29ya2luZw==:app=cortex\x1b\\"
+	if got := hookReport(t, tty, "cortex", `{"hook_event_name":"UserPromptSubmit","session_id":"osc-pane"}`); got != want {
+		t.Fatalf("first report = %q", got)
+	}
+	t.Setenv("TMUX_PANE", "%2")
+	if got := hookReport(t, tty, "cortex", `{"hook_event_name":"PreToolUse","session_id":"osc-pane"}`); got != want {
+		t.Fatalf("pane-change report = %q", got)
+	}
+	record, err := readRecord(stateFile(sessionKey("cortex", "osc-pane", "%2", "/osc-test")))
+	if err != nil || record.PaneID != "%2" {
+		t.Fatalf("new pane record = %+v, %v", record, err)
+	}
+	t.Setenv("TMUX", "/osc-other,2,1")
+	if got := hookReport(t, tty, "cortex", `{"hook_event_name":"PostToolUse","session_id":"osc-pane"}`); got != want {
+		t.Fatalf("server-change report = %q", got)
+	}
+}
+
+func TestHookSkipsSupersededProgramStatus(t *testing.T) {
+	for _, mode := range []string{"changed", "cleared"} {
+		t.Run(mode, func(t *testing.T) {
+			writeConfig(t, withTempHome(t), "osc7501 = true\n")
+			tty := withFakeTTY(t)
+			identity := sessionIdentity{Agent: "cortex", SessionID: "superseded-" + mode}
+			if mode == "cleared" {
+				if got := hookReport(t, tty, "cortex", `{"hook_event_name":"Stop","session_id":"`+identity.SessionID+`"}`); got == "" {
+					t.Fatal("ordinary stop did not report")
+				}
+			}
+			lookups := 0
+			terminalPath = func() string {
+				lookups++
+				if mode == "changed" {
+					if _, err := writeStateRecord(identity, "done", "agent-turn-complete"); err != nil {
+						t.Fatal(err)
+					}
+				} else {
+					if _, err := writeStateRecord(identity, "working", "UserPromptSubmit"); err != nil {
+						t.Fatal(err)
+					}
+				}
+				return tty
+			}
+			payload := `{"hook_event_name":"PermissionRequest","session_id":"` + identity.SessionID + `"}`
+			if mode == "cleared" {
+				payload = `{"hook_event_name":"SessionEnd","session_id":"` + identity.SessionID + `"}`
+			}
+			if got := hookReport(t, tty, "cortex", payload); got != "" {
+				t.Fatalf("superseded report = %q", got)
+			}
+			if lookups != 1 {
+				t.Fatalf("lookup count = %d, want 1", lookups)
+			}
+			record, err := readRecord(stateFile(sessionKey(identity.Agent, identity.SessionID, "", "")))
+			if err != nil {
+				t.Fatalf("replacement record missing: %v", err)
+			}
+			want := "done"
+			if mode == "cleared" {
+				want = "working"
+			}
+			if record.State != want {
+				t.Fatalf("replacement state = %q, want %q", record.State, want)
+			}
+		})
+	}
+}
+
+func TestHookPreservesCopilotLateNotificationGuard(t *testing.T) {
+	writeConfig(t, withTempHome(t), "osc7501 = true\nosc7501_agents = [\"copilot\"]\n")
+	tty := withFakeTTY(t)
+	if got := hookReport(t, tty, "copilot", `{"hook_event_name":"userPromptSubmitted","sessionId":"osc-delayed"}`); got == "" {
+		t.Fatal("prompt report missing")
+	}
+	hookReport(t, tty, "copilot", `{"hook_event_name":"agentStop","sessionId":"osc-delayed"}`)
+	if got := hookReport(t, tty, "copilot", `{"hook_event_name":"notification","notification_type":"permission_prompt","sessionId":"osc-delayed"}`); got != "" {
+		t.Fatalf("late notification report = %q", got)
+	}
+	record, err := readRecord(stateFile(sessionKey("copilot", "osc-delayed", "", "")))
+	if err != nil || record.State != "done" {
+		t.Fatalf("record = %+v, %v", record, err)
 	}
 }
 
