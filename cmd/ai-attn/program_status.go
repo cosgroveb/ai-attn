@@ -2,14 +2,60 @@ package main
 
 import (
 	"encoding/base64"
+	"encoding/json"
 	"fmt"
 	"io"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"slices"
 	"strconv"
 	"strings"
+	"time"
 )
+
+const (
+	programStatusReceiptSuffix = ".osc7501"
+	programStatusRetryDelay    = 5 * time.Second
+)
+
+// A receipt belongs to one session key and records the last attempt for a
+// pane and report body. A failed first attempt permits an immediate retry.
+type programStatusReceipt struct {
+	PaneID  string
+	Body    string
+	Failed  bool
+	RetryAt int64
+}
+
+func readProgramStatusReceipt(path string) programStatusReceipt {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return programStatusReceipt{}
+	}
+	var receipt programStatusReceipt
+	if err := json.Unmarshal(data, &receipt); err != nil {
+		return programStatusReceipt{}
+	}
+	return receipt
+}
+
+func writeProgramStatusReceipt(path string, receipt programStatusReceipt) error {
+	file, err := os.CreateTemp(filepath.Dir(path), ".osc7501-*")
+	if err != nil {
+		return err
+	}
+	defer os.Remove(file.Name())
+	writeErr := json.NewEncoder(file).Encode(receipt)
+	closeErr := file.Close()
+	if writeErr != nil {
+		return writeErr
+	}
+	if closeErr != nil {
+		return closeErr
+	}
+	return os.Rename(file.Name(), path)
+}
 
 // nativeOSC7501Agents are agents that report OSC 7501 program status
 // themselves in current releases. ai-attn leaves them out of the default
@@ -49,6 +95,30 @@ func (c Config) emitsOSC7501(agent string) bool {
 		return !nativeOSC7501Agents[agent]
 	}
 	return slices.Contains(c.OSC7501Agents, agent)
+}
+
+func reportHookProgramStatus(path string, identity sessionIdentity, body string, stderr io.Writer) {
+	receiptPath := path + programStatusReceiptSuffix
+	previous := readProgramStatusReceipt(receiptPath)
+	same := previous.Body == body && previous.PaneID == identity.PaneID
+	if same && (!previous.Failed || previous.RetryAt > time.Now().UnixMilli()) {
+		return
+	}
+	current := func() bool {
+		record, err := readRecord(path)
+		return err == nil && matchesProgramStatus(record, identity, body)
+	}
+	sent := emitProgramStatus(identity.Agent, body, current, stderr)
+	if !current() {
+		return
+	}
+	receipt := programStatusReceipt{PaneID: identity.PaneID, Body: body, Failed: !sent}
+	if !sent && same && previous.Failed {
+		receipt.RetryAt = time.Now().Add(programStatusRetryDelay).UnixMilli()
+	}
+	if err := writeProgramStatusReceipt(receiptPath, receipt); err != nil {
+		fmt.Fprintf(stderr, "ai-attn: warning: failed to save program status receipt: %v\n", err)
+	}
 }
 
 func matchesProgramStatus(record Record, identity sessionIdentity, body string) bool {
@@ -125,24 +195,30 @@ var terminalPath = func() string {
 // emitProgramStatus writes an OSC 7501 report for agent to the agent's
 // terminal, where the terminal or tmux shows it against the agent's pane.
 // Hooks with no terminal anywhere above them skip the report.
-func emitProgramStatus(agent, body string, current func() bool, stderr io.Writer) {
+func emitProgramStatus(agent, body string, current func() bool, stderr io.Writer) bool {
 	path := terminalPath()
 	if path == "" {
-		return
+		return false
 	}
 	tty, err := os.OpenFile(path, os.O_WRONLY, 0)
 	if err != nil {
-		return
+		return false
 	}
 	defer tty.Close()
 	if !current() {
-		return
+		return false
 	}
 	// One write, so the report cannot interleave with other output mid-sequence.
 	report := fmt.Sprintf("\x1b]7501;%s:app=%s\x1b\\", body, agent)
-	if _, err := io.WriteString(tty, report); err != nil {
-		fmt.Fprintf(stderr, "ai-attn: warning: failed to write program status: %v\n", err)
+	n, err := io.WriteString(tty, report)
+	if err == nil && n != len(report) {
+		err = io.ErrShortWrite
 	}
+	if err != nil {
+		fmt.Fprintf(stderr, "ai-attn: warning: failed to write program status: %v\n", err)
+		return false
+	}
+	return true
 }
 
 // sortedNativeOSC7501Agents returns nativeOSC7501Agents in allAgents order.
